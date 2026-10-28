@@ -39,7 +39,8 @@ import java.util.List;
 
 /**
  * A quiet home screen: the time, Hijri date and next prayer on top, and one row of app banners.
- * Shows every app that has a TV launcher entry, in {@link #ORDER} first, then the rest by name.
+ * The row holds the viewer's picks (long-press OK in "all apps" adds or removes one); until they
+ * pick, it shows every TV app, {@link #ORDER} first. The grid button lists everything installed.
  */
 public class HomeActivity extends Activity {
     /** Apps shown first, in this order (anything else installed follows). */
@@ -71,7 +72,7 @@ public class HomeActivity extends Activity {
         super.onCreate(b);
         dp = getResources().getDisplayMetrics().density;
 
-        FrameLayout root = new FrameLayout(this);
+        root = new FrameLayout(this);
         root.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
         root.setBackground(new NightSky());
 
@@ -104,17 +105,10 @@ public class HomeActivity extends Activity {
         tp.setMargins(px(56), px(36), px(140), 0);
         root.addView(top, tp);
 
-        // Gear (system settings) in the opposite corner.
-        TextView gear = text(22, MUTED, false);
-        gear.setText("⚙");
-        gear.setGravity(Gravity.CENTER);
-        gear.setFocusable(true);
-        gear.setBackground(tileBg(false, 999));
-        gear.setOnFocusChangeListener((v, f) -> { v.setBackground(tileBg(f, 999)); v.animate().scaleX(f ? 1.15f : 1).scaleY(f ? 1.15f : 1).setDuration(120); });
-        gear.setOnClickListener(v -> launch(new Intent(android.provider.Settings.ACTION_SETTINGS)));
-        FrameLayout.LayoutParams gp = new FrameLayout.LayoutParams(px(48), px(48), Gravity.TOP | Gravity.END);
-        gp.setMargins(px(56), px(44), px(56), 0);
-        root.addView(gear, gp);
+        // Opposite corner: system settings, and next to it all apps.
+        root.addView(roundButton(true, () -> launch(new Intent(android.provider.Settings.ACTION_SETTINGS))), corner(0));
+        appsBtn = roundButton(false, this::showAllApps);
+        root.addView(appsBtn, corner(1));
 
         // Bottom: one row of app banners.
         row = new LinearLayout(this);
@@ -152,50 +146,259 @@ public class HomeActivity extends Activity {
         super.onPause();
     }
 
-    /** Home stays home: Back does nothing here. */
+    /** Home stays home: Back only closes the all-apps grid. */
     @Override
-    public void onBackPressed() {}
+    public void onBackPressed() { hideAllApps(); }
 
-    private void loadApps() {
+    /** Home pressed while already home: back to the main view. */
+    @Override
+    protected void onNewIntent(Intent i) {
+        super.onNewIntent(i);
+        hideAllApps();
+    }
+
+    /**
+     * TV apps (with {@code all}, phone-style launcher apps too, plus Settings and Play Store),
+     * one entry per package, in {@link #ORDER} then by name.
+     */
+    private List<ApplicationInfo> queryApps(boolean all) {
         PackageManager pm = getPackageManager();
-        List<ResolveInfo> found = pm.queryIntentActivities(
-                new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER), 0);
+        List<ResolveInfo> found = new ArrayList<>(pm.queryIntentActivities(
+                new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER), 0));
+        int tvCount = found.size();
+        if (all) found.addAll(pm.queryIntentActivities(
+                new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0));
         List<ApplicationInfo> apps = new ArrayList<>();
-        for (ResolveInfo r : found) {
-            ApplicationInfo a = r.activityInfo.applicationInfo;
-            if (HIDDEN.contains(a.packageName)) continue;
+        for (int i = 0; i < found.size(); i++) {
+            ApplicationInfo a = found.get(i).activityInfo.applicationInfo;
+            if (!all && HIDDEN.contains(a.packageName)) continue;
+            // Phone-style entries from the system image are factory demos and setup tools.
+            if (i >= tvCount && (a.flags & ApplicationInfo.FLAG_SYSTEM) != 0) continue;
             boolean dup = false;
             for (ApplicationInfo x : apps) if (x.packageName.equals(a.packageName)) dup = true;
             if (!dup) apps.add(a);
         }
         apps.sort((x, y) -> {
-            int ix = ORDER.indexOf(x.packageName), iy = ORDER.indexOf(y.packageName);
+            int ix = all ? 0 : ORDER.indexOf(x.packageName), iy = all ? 0 : ORDER.indexOf(y.packageName);
             if (ix < 0) ix = 999;
             if (iy < 0) iy = 999;
             if (ix != iy) return ix - iy;
             return pm.getApplicationLabel(x).toString().compareTo(pm.getApplicationLabel(y).toString());
         });
+        return apps;
+    }
 
+    /** The apps on the home row, in order: the viewer's picks, or every TV app until they pick. */
+    private List<String> favorites() {
+        String saved = AdhanScheduler.prefs(this).getString("home_apps", null);
+        List<String> out = new ArrayList<>();
+        if (saved != null) {
+            for (String p : saved.split(",")) if (!p.isEmpty()) out.add(p);
+        } else {
+            for (ApplicationInfo a : queryApps(false)) out.add(a.packageName);
+        }
+        return out;
+    }
+
+    /** Adds the app to the end of the row, or removes it. Returns true if it's now on the row. */
+    private boolean toggleFavorite(String pkg) {
+        List<String> fav = favorites();
+        boolean add = !fav.remove(pkg);
+        if (add) fav.add(pkg);
+        AdhanScheduler.prefs(this).edit().putString("home_apps", String.join(",", fav)).apply();
+        android.widget.Toast.makeText(this, add ? "أُضيف للشريط" : "انشال من الشريط", android.widget.Toast.LENGTH_SHORT).show();
+        return add;
+    }
+
+    private void loadApps() {
+        PackageManager pm = getPackageManager();
         View focused = getCurrentFocus();
         Object keep = focused != null ? focused.getTag() : null;
         row.removeAllViews();
         View toFocus = null;
-        for (ApplicationInfo a : apps) {
-            View tile = tile(pm, a);
-            row.addView(tile);
-            if (toFocus == null || a.packageName.equals(keep)) toFocus = tile;
+        List<ApplicationInfo> installed = queryApps(true);
+        for (String pkg : favorites()) {
+            for (ApplicationInfo a : installed) {
+                if (!a.packageName.equals(pkg)) continue;
+                View tile = tile(pm, a);
+                // Long-press OK on a row tile takes it off the row.
+                tile.setOnLongClickListener(v -> { toggleFavorite(pkg); loadApps(); return true; });
+                row.addView(tile, rowParams());
+                if (toFocus == null || pkg.equals(keep)) toFocus = tile;
+            }
         }
-        if (toFocus != null) toFocus.requestFocus();
+        if (toFocus != null && allApps == null && !appsBtn.isFocused()) toFocus.requestFocus();
     }
 
-    private View tile(PackageManager pm, ApplicationInfo a) {
-        int w = px(148), h = px(83), r = px(12);
+    private LinearLayout.LayoutParams rowParams() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(148), px(83));
+        lp.setMarginStart(px(10));
+        lp.setMarginEnd(px(10));
+        return lp;
+    }
+
+    private FrameLayout root;
+    private View allApps, appsBtn;
+
+    /** Round icon button for the top corner. */
+    private View roundButton(boolean gear, Runnable onClick) {
+        ImageView b = new ImageView(this);
+        b.setImageDrawable(new Glyph(gear));
+        b.setColorFilter(MUTED);
+        b.setPadding(px(13), px(13), px(13), px(13));
+        b.setFocusable(true);
+        b.setBackground(tileBg(false, 999));
+        b.setOnFocusChangeListener((v, f) -> {
+            v.setBackground(tileBg(f, 999));
+            ((ImageView) v).setColorFilter(f ? GOLD : MUTED);
+            v.animate().scaleX(f ? 1.15f : 1).scaleY(f ? 1.15f : 1).setDuration(120);
+        });
+        b.setOnClickListener(v -> onClick.run());
+        return b;
+    }
+
+    /** Line icons drawn to match each other: a gear, or a 3x3 grid of rounded squares (all apps). */
+    private static final class Glyph extends Drawable {
+        private final boolean gear;
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        Glyph(boolean gear) { this.gear = gear; p.setColor(0xFFFFFFFF); }
+
+        @Override
+        public void draw(Canvas c) {
+            Rect b = getBounds();
+            float s = Math.min(b.width(), b.height());
+            float x0 = b.exactCenterX() - s / 2, y0 = b.exactCenterY() - s / 2;
+            if (gear) {
+                float cx = x0 + s / 2, cy = y0 + s / 2;
+                p.setStyle(Paint.Style.FILL);
+                // Eight teeth, then the ring over them, then the hole.
+                for (int k = 0; k < 8; k++) {
+                    c.save();
+                    c.rotate(k * 45, cx, cy);
+                    c.drawRoundRect(cx - s * 0.1f, y0 + s * 0.02f, cx + s * 0.1f, cy - s * 0.3f, s * 0.04f, s * 0.04f, p);
+                    c.restore();
+                }
+                Path ring = new Path();
+                ring.setFillType(Path.FillType.EVEN_ODD);
+                ring.addCircle(cx, cy, s * 0.36f, Path.Direction.CW);
+                ring.addCircle(cx, cy, s * 0.15f, Path.Direction.CW);
+                c.drawPath(ring, p);
+            } else {
+                float cell = s / 3, sq = cell * 0.62f, r = cell * 0.16f;
+                p.setStyle(Paint.Style.FILL);
+                for (int i = 0; i < 3; i++) {
+                    for (int j = 0; j < 3; j++) {
+                        float cx = x0 + cell * (i + 0.5f), cy = y0 + cell * (j + 0.5f);
+                        c.drawRoundRect(cx - sq / 2, cy - sq / 2, cx + sq / 2, cy + sq / 2, r, r, p);
+                    }
+                }
+            }
+        }
+
+        @Override public void setAlpha(int a) { p.setAlpha(a); }
+        @Override public void setColorFilter(ColorFilter f) { p.setColorFilter(f); }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    /** Position of the i-th round button, from the screen edge inward. */
+    private FrameLayout.LayoutParams corner(int i) {
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(px(48), px(48), Gravity.TOP | Gravity.END);
+        lp.setMargins(0, px(44), px(56 + i * 62), 0);
+        lp.setMarginEnd(px(56 + i * 62));
+        return lp;
+    }
+
+    /** Full-screen grid of every app on the TV, over the home screen. */
+    private void showAllApps() {
+        if (allApps != null) return;
+        PackageManager pm = getPackageManager();
+        FrameLayout layer = new FrameLayout(this);
+        layer.setBackground(new NightSky());
+        layer.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text(26, INK, true);
+        title.setText("كل التطبيقات");
+        TextView hint = text(13, MUTED, false);
+        hint.setText("ضغطة مطوّلة على زر الوسط: إضافة التطبيق للشريط تحت أو إزالته  ·  ★ = في الشريط");
+        hint.setPadding(0, px(8), 0, 0);
+        head.addView(title);
+        head.addView(hint);
+        FrameLayout.LayoutParams tp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
+        tp.setMargins(px(56), px(30), px(56), 0);
+        layer.addView(head, tp);
+
+        android.widget.GridLayout grid = new android.widget.GridLayout(this);
+        grid.setColumnCount(5);
+        grid.setClipChildren(false);
+        grid.setClipToPadding(false);
+        grid.setPadding(0, px(12), 0, px(24));
+        View first = null;
+        List<String> fav = favorites();
+        for (ApplicationInfo a : queryApps(true)) {
+            FrameLayout t = tile(pm, a);
+            // Star on apps that are on the home row; long-press OK toggles it.
+            TextView star = text(13, 0xFF1A1400, true);
+            star.setTypeface(Typeface.DEFAULT_BOLD);
+            star.setText("★");
+            star.setGravity(Gravity.CENTER);
+            star.setBackground(round(GOLD, 999));
+            star.setVisibility(fav.contains(a.packageName) ? View.VISIBLE : View.GONE);
+            FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(px(22), px(22), Gravity.TOP | Gravity.END);
+            sl.setMargins(px(5), px(5), px(5), px(5));
+            t.addView(star, sl);
+            t.setOnLongClickListener(v -> {
+                star.setVisibility(toggleFavorite(a.packageName) ? View.VISIBLE : View.GONE);
+                return true;
+            });
+            android.widget.GridLayout.LayoutParams lp = new android.widget.GridLayout.LayoutParams();
+            lp.width = px(148);
+            lp.height = px(83);
+            lp.setMargins(px(10), px(10), px(10), px(10));
+            grid.addView(t, lp);
+            if (first == null) first = t;
+        }
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.setClipChildren(false);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.addView(grid, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_HORIZONTAL));
+        FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(-1, -1);
+        sp.setMargins(0, px(90), 0, 0);
+        layer.addView(scroll, sp);
+
+        root.addView(layer, new FrameLayout.LayoutParams(-1, -1));
+        allApps = layer;
+        if (first != null) first.requestFocus();
+    }
+
+    private void hideAllApps() {
+        if (allApps == null) return;
+        root.removeView(allApps);
+        allApps = null;
+        loadApps();   // picks may have changed
+        appsBtn.requestFocus();
+    }
+
+    /** Focusable rounded frame that grows and turns gold when focused. */
+    private FrameLayout frame(Object tag, int r) {
         FrameLayout box = new FrameLayout(this);
-        box.setTag(a.packageName);
+        box.setTag(tag);
         box.setFocusable(true);
         box.setPadding(px(3), px(3), px(3), px(3));
         box.setBackground(tileBg(false, r));
         box.setClipToOutline(true);
+        box.setOnFocusChangeListener((v, f) -> {
+            v.setBackground(tileBg(f, r));
+            v.animate().scaleX(f ? 1.1f : 1).scaleY(f ? 1.1f : 1).translationZ(f ? px(8) : 0).setDuration(140);
+        });
+        return box;
+    }
+
+    private FrameLayout tile(PackageManager pm, ApplicationInfo a) {
+        int r = px(12);
+        FrameLayout box = frame(a.packageName, r);
 
         Drawable banner = pm.getApplicationBanner(a);
         if (banner != null) {
@@ -220,19 +423,11 @@ public class HomeActivity extends Activity {
             box.addView(col, new FrameLayout.LayoutParams(-1, -1));
         }
 
-        box.setOnFocusChangeListener((v, f) -> {
-            v.setBackground(tileBg(f, r));
-            v.animate().scaleX(f ? 1.1f : 1).scaleY(f ? 1.1f : 1).translationZ(f ? px(8) : 0).setDuration(140);
-        });
         box.setOnClickListener(v -> {
             Intent i = pm.getLeanbackLaunchIntentForPackage(a.packageName);
             if (i == null) i = pm.getLaunchIntentForPackage(a.packageName);
             launch(i);
         });
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(w, h);
-        lp.setMarginStart(px(10));
-        lp.setMarginEnd(px(10));
-        box.setLayoutParams(lp);
         return box;
     }
 

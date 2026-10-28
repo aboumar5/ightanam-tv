@@ -18,13 +18,15 @@ New-Item -ItemType Directory -Force build\classes, build\dex | Out-Null
 # --- Thmanyah font (optional) ---
 # Its license forbids redistributing the files, so they aren't in the repo. Download the font from
 # https://font.thmanyah.com and drop the .ttf/.otf files into .\fonts; without them a system font is used.
+# -NoFontAssets builds without bundling them (for a public download: an APK's assets can be extracted).
 $assets = @()
+$bundleFont = -not ($args -contains '-NoFontAssets')
 # Kept at the assets root: aapt2 on Windows stores subfolder paths with backslashes Android can't open.
 New-Item -ItemType Directory -Force build\assets | Out-Null
 foreach ($w in 'Regular', 'Bold', 'Black') {
     $f = Get-ChildItem fonts -Recurse -Include "*$w.ttf", "*$w.otf" -ErrorAction SilentlyContinue |
          Where-Object Name -match '^thmanyah' | Where-Object Name -notmatch 'serif' | Select-Object -First 1
-    if ($f) { Copy-Item $f.FullName ("build\assets\font-" + $w.ToLower() + $f.Extension.ToLower()); $assets = '-A', 'build\assets' }
+    if ($f -and $bundleFont) { Copy-Item $f.FullName ("build\assets\font-" + $w.ToLower() + $f.Extension.ToLower()); $assets = '-A', 'build\assets' }
 }
 
 # --- resources + manifest ---
