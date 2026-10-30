@@ -53,6 +53,7 @@
             android:name=".HomeActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:taskAffinity="com.aboumarai.ightanam.home"
             android:stateNotNeeded="true"
             android:excludeFromRecents="true"
             android:screenOrientation="landscape"

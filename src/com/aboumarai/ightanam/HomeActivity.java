@@ -433,7 +433,8 @@ public class HomeActivity extends Activity {
 
     private void launch(Intent i) {
         if (i == null) return;
-        try { startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); } catch (Exception ignored) {}
+        // Same flags as the stock launchers: reuse the app's task but reset it to its start screen if stale.
+        try { startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)); } catch (Exception ignored) {}
     }
 
     private void updateTop() {
