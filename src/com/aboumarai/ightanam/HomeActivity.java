@@ -106,9 +106,11 @@ public class HomeActivity extends Activity {
         root.addView(top, tp);
 
         // Opposite corner: system settings, and next to it all apps.
-        root.addView(roundButton(true, () -> launch(new Intent(android.provider.Settings.ACTION_SETTINGS))), corner(0));
-        appsBtn = roundButton(false, this::showAllApps);
+        root.addView(roundButton(Glyph.GEAR, () -> launch(new Intent(android.provider.Settings.ACTION_SETTINGS))), corner(0));
+        appsBtn = roundButton(Glyph.APPS, this::showAllApps);
         root.addView(appsBtn, corner(1));
+        inputsBtn = roundButton(Glyph.INPUT, this::showInputs);
+        root.addView(inputsBtn, corner(2));
 
         // Bottom: one row of app banners.
         row = new LinearLayout(this);
@@ -238,12 +240,111 @@ public class HomeActivity extends Activity {
     }
 
     private FrameLayout root;
-    private View allApps, appsBtn;
+    /** The full-screen layer (all apps or inputs) on top, and the button that opened it. */
+    private View allApps, opener;
+    private View appsBtn, inputsBtn;
+
+    /**
+     * The TV's physical inputs (HDMI and the like, not the tuner), as tiles that switch to them.
+     * A device the TV recognizes over HDMI-CEC (e.g. a game console) shows under its port.
+     */
+    private void showInputs() {
+        if (allApps != null) return;
+        android.media.tv.TvInputManager tim = (android.media.tv.TvInputManager) getSystemService(TV_INPUT_SERVICE);
+        List<android.media.tv.TvInputInfo> all = tim != null ? tim.getTvInputList() : new ArrayList<>();
+        FrameLayout layer = layer("مصادر الإدخال", "اختر الجهاز اللي تبي تحوّل له. المنافذ الموصولة بالذهبي.");
+
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.HORIZONTAL);
+        list.setGravity(Gravity.CENTER);
+        list.setClipChildren(false);   // room for the focused tile to grow
+        list.setClipToPadding(false);
+        list.setPadding(0, px(16), 0, px(16));
+        layer.setClipChildren(false);
+        View first = null, firstConnected = null;
+        for (android.media.tv.TvInputInfo in : all) {
+            if (in.getParentId() != null || in.getType() == android.media.tv.TvInputInfo.TYPE_TUNER
+                    || in.isPassthroughInput() == false) continue;
+            // Only an active signal counts: empty HDMI ports report "standby" on some TVs.
+            boolean connected = tim.getInputState(in.getId()) == android.media.tv.TvInputManager.INPUT_STATE_CONNECTED;
+            String device = null;
+            for (android.media.tv.TvInputInfo child : all) {
+                if (in.getId().equals(child.getParentId())) device = String.valueOf(child.loadLabel(this));
+            }
+            CharSequence custom = in.loadCustomLabel(this);
+            String name = String.valueOf(custom != null && custom.length() > 0 ? custom : in.loadLabel(this));
+            View t = inputTile(name, device != null ? device : (connected ? "موصول" : "غير موصول"), connected, in.getId());
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(168), px(100));
+            lp.setMargins(px(10), 0, px(10), 0);
+            list.addView(t, lp);
+            if (first == null) first = t;
+            if (connected && device != null && firstConnected == null) firstConnected = t;
+        }
+        if (first == null) {
+            TextView none = text(16, MUTED, false);
+            none.setText("ما لقيت مداخل في هذي الشاشة.");
+            list.addView(none);
+        }
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER);
+        layer.addView(list, lp);
+        show(layer, inputsBtn, firstConnected != null ? firstConnected : first);
+    }
+
+    private View inputTile(String name, String sub, boolean connected, String inputId) {
+        int r = px(12);
+        FrameLayout box = frame(inputId, r);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER);
+        col.setBackground(round(connected ? 0xFF1C2350 : 0xFF11152F, r - px(3)));
+        TextView n = text(20, connected ? GOLD : MUTED, true);
+        n.setText(name);
+        n.setGravity(Gravity.CENTER);
+        TextView s = text(13, connected ? INK : MUTED, false);
+        s.setText(sub);
+        s.setGravity(Gravity.CENTER);
+        s.setPadding(0, px(6), 0, 0);
+        col.addView(n);
+        col.addView(s);
+        box.addView(col, new FrameLayout.LayoutParams(-1, -1));
+        box.setOnClickListener(v -> {
+            hideAllApps();
+            launch(new Intent(Intent.ACTION_VIEW, android.media.tv.TvContract.buildChannelUriForPassthroughInput(inputId)));
+        });
+        return box;
+    }
+
+    /** Full-screen layer with a title and a hint line. */
+    private FrameLayout layer(String titleText, String hintText) {
+        FrameLayout layer = new FrameLayout(this);
+        layer.setBackground(new NightSky());
+        layer.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text(26, INK, true);
+        title.setText(titleText);
+        TextView hint = text(13, MUTED, false);
+        hint.setText(hintText);
+        hint.setPadding(0, px(8), 0, 0);
+        head.addView(title);
+        head.addView(hint);
+        FrameLayout.LayoutParams tp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
+        tp.setMargins(px(56), px(30), px(56), 0);
+        layer.addView(head, tp);
+        return layer;
+    }
+
+    private void show(FrameLayout layer, View from, View focus) {
+        root.addView(layer, new FrameLayout.LayoutParams(-1, -1));
+        allApps = layer;
+        opener = from;
+        if (focus != null) focus.requestFocus();
+    }
 
     /** Round icon button for the top corner. */
-    private View roundButton(boolean gear, Runnable onClick) {
+    private View roundButton(int kind, Runnable onClick) {
         ImageView b = new ImageView(this);
-        b.setImageDrawable(new Glyph(gear));
+        b.setImageDrawable(new Glyph(kind));
         b.setColorFilter(MUTED);
         b.setPadding(px(13), px(13), px(13), px(13));
         b.setFocusable(true);
@@ -257,19 +358,32 @@ public class HomeActivity extends Activity {
         return b;
     }
 
-    /** Line icons drawn to match each other: a gear, or a 3x3 grid of rounded squares (all apps). */
+    /** Icons drawn to match each other: a gear, a 3x3 grid of rounded squares (all apps), or an input. */
     private static final class Glyph extends Drawable {
-        private final boolean gear;
+        static final int GEAR = 0, APPS = 1, INPUT = 2;
+        private final int kind;
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-        Glyph(boolean gear) { this.gear = gear; p.setColor(0xFFFFFFFF); }
+        Glyph(int kind) { this.kind = kind; p.setColor(0xFFFFFFFF); }
 
         @Override
         public void draw(Canvas c) {
             Rect b = getBounds();
             float s = Math.min(b.width(), b.height());
             float x0 = b.exactCenterX() - s / 2, y0 = b.exactCenterY() - s / 2;
-            if (gear) {
+            if (kind == INPUT) {
+                // A screen outline with an arrow coming in from the side.
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(s * 0.11f);
+                p.setStrokeCap(Paint.Cap.ROUND);
+                p.setStrokeJoin(Paint.Join.ROUND);
+                c.drawRoundRect(x0 + s * 0.22f, y0 + s * 0.14f, x0 + s * 0.94f, y0 + s * 0.72f, s * 0.1f, s * 0.1f, p);
+                c.drawLine(x0 + s * 0.46f, y0 + s * 0.88f, x0 + s * 0.7f, y0 + s * 0.88f, p);
+                float ay = y0 + s * 0.43f;
+                c.drawLine(x0 + s * 0.06f, ay, x0 + s * 0.6f, ay, p);
+                c.drawLine(x0 + s * 0.6f, ay, x0 + s * 0.46f, ay - s * 0.14f, p);
+                c.drawLine(x0 + s * 0.6f, ay, x0 + s * 0.46f, ay + s * 0.14f, p);
+            } else if (kind == GEAR) {
                 float cx = x0 + s / 2, cy = y0 + s / 2;
                 p.setStyle(Paint.Style.FILL);
                 // Eight teeth, then the ring over them, then the hole.
@@ -313,22 +427,8 @@ public class HomeActivity extends Activity {
     private void showAllApps() {
         if (allApps != null) return;
         PackageManager pm = getPackageManager();
-        FrameLayout layer = new FrameLayout(this);
-        layer.setBackground(new NightSky());
-        layer.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
-
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text(26, INK, true);
-        title.setText("كل التطبيقات");
-        TextView hint = text(13, MUTED, false);
-        hint.setText("ضغطة مطوّلة على زر الوسط: إضافة التطبيق للشريط تحت أو إزالته  ·  ★ = في الشريط");
-        hint.setPadding(0, px(8), 0, 0);
-        head.addView(title);
-        head.addView(hint);
-        FrameLayout.LayoutParams tp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
-        tp.setMargins(px(56), px(30), px(56), 0);
-        layer.addView(head, tp);
+        FrameLayout layer = layer("كل التطبيقات",
+                "ضغطة مطوّلة على زر الوسط: إضافة التطبيق للشريط تحت أو إزالته  ·  ★ = في الشريط");
 
         android.widget.GridLayout grid = new android.widget.GridLayout(this);
         grid.setColumnCount(5);
@@ -367,10 +467,7 @@ public class HomeActivity extends Activity {
         FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(-1, -1);
         sp.setMargins(0, px(90), 0, 0);
         layer.addView(scroll, sp);
-
-        root.addView(layer, new FrameLayout.LayoutParams(-1, -1));
-        allApps = layer;
-        if (first != null) first.requestFocus();
+        show(layer, appsBtn, first);
     }
 
     private void hideAllApps() {
@@ -378,7 +475,7 @@ public class HomeActivity extends Activity {
         root.removeView(allApps);
         allApps = null;
         loadApps();   // picks may have changed
-        appsBtn.requestFocus();
+        if (opener != null) opener.requestFocus();
     }
 
     /** Focusable rounded frame that grows and turns gold when focused. */
