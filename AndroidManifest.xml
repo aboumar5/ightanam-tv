@@ -76,6 +76,9 @@
             </intent-filter>
         </receiver>
 
+        <!-- Kids mode: the day's watching time ran out. -->
+        <receiver android:name=".KidsMode$TimeUpReceiver" android:exported="false" />
+
         <!-- Adhan card shown over other apps. -->
         <service android:name=".AdhanService" android:exported="false" />
 

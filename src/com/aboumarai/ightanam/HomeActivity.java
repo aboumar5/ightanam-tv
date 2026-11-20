@@ -100,17 +100,37 @@ public class HomeActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         np.topMargin = px(14);
         top.addView(next, np);
+        // Kids mode: time left today.
+        kidsPill = text(17, INK, true);
+        kidsPill.setBackground(round(0x1AFFFFFF, 999));
+        kidsPill.setPadding(px(16), px(6), px(16), px(6));
+        LinearLayout.LayoutParams kp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        kp.topMargin = px(10);
+        top.addView(kidsPill, kp);
         FrameLayout.LayoutParams tp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
         tp.setMargins(px(56), px(36), px(140), 0);
         root.addView(top, tp);
 
-        // Opposite corner: system settings, and next to it all apps.
-        root.addView(roundButton(Glyph.GEAR, () -> launch(new Intent(android.provider.Settings.ACTION_SETTINGS))), corner(0));
+        // Opposite corner: system settings, all apps, inputs, kids mode. In kids mode only a lock.
+        gearBtn = roundButton(Glyph.GEAR, () -> launch(new Intent(android.provider.Settings.ACTION_SETTINGS)));
+        root.addView(gearBtn, corner(0));
         appsBtn = roundButton(Glyph.APPS, this::showAllApps);
         root.addView(appsBtn, corner(1));
         inputsBtn = roundButton(Glyph.INPUT, this::showInputs);
         root.addView(inputsBtn, corner(2));
+        kidsBtn = roundButton(Glyph.KIDS, this::showKidsSetup);
+        root.addView(kidsBtn, corner(3));
+        lockBtn = roundButton(Glyph.LOCK, () -> askPin("وضع الأطفال", "أدخل الرقم السري للخروج", pin -> {
+            if (!pin.equals(KidsMode.pin(this))) return false;
+            KidsMode.setOn(this, false);
+            applyMode();
+            loadApps();
+            toast("انطفى وضع الأطفال");
+            return true;
+        }));
+        root.addView(lockBtn, corner(0));
 
         // Bottom: one row of app banners.
         row = new LinearLayout(this);
@@ -132,15 +152,49 @@ public class HomeActivity extends Activity {
         setContentView(root);
         AdhanScheduler.schedule(this);
         FridayScheduler.schedule(this, 5_000);
+        readExtras(getIntent());
+    }
+
+    /** Set by the kids-mode alarm (show the time's-up screen) or for testing Ramadan mode. */
+    private boolean pendingTimeUp;
+    private static boolean ramadanTest;
+
+    private void readExtras(Intent i) {
+        if (i == null) return;
+        if (i.getBooleanExtra(KidsMode.EXTRA_TIME_UP, false)) pendingTimeUp = true;
+        // Preview Ramadan mode outside Ramadan: am start ... --ez ramadanTest true|false
+        if (i.hasExtra("ramadanTest")) ramadanTest = i.getBooleanExtra("ramadanTest", false);
+        // Test the time's-up screen without waiting: am start ... --ez kidsTimeUpTest true
+        if (i.getBooleanExtra("kidsTimeUpTest", false) && KidsMode.on(this)) {
+            KidsMode.useUpToday(this);
+            pendingTimeUp = true;
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        KidsMode.endSession(this);   // back from a kids' app: count its time
+        applyMode();
         loadApps();
         handler.removeCallbacks(tick);
         tick.run();
+        if (pendingTimeUp) {
+            pendingTimeUp = false;
+            if (KidsMode.timeUp(this)) showTimeUp();
+        }
     }
+
+    /** Normal buttons, or only the lock in kids mode. */
+    private void applyMode() {
+        boolean kids = KidsMode.on(this);
+        for (View v : new View[]{gearBtn, appsBtn, inputsBtn, kidsBtn}) v.setVisibility(kids ? View.GONE : View.VISIBLE);
+        lockBtn.setVisibility(kids ? View.VISIBLE : View.GONE);
+        if (!kids) closeTimeUp();
+        updateTop();   // show or hide the time-left line right away
+    }
+
+    private void toast(String s) { android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_SHORT).show(); }
 
     @Override
     protected void onPause() {
@@ -151,7 +205,8 @@ public class HomeActivity extends Activity {
     /** Home stays home: Back only closes the app menu or the full-screen layer. */
     @Override
     public void onBackPressed() {
-        if (menu != null) closeMenu(); else hideAllApps();
+        if (menu != null) closeMenu();
+        else if (timeUpLayer == null) hideAllApps();   // the time's-up screen only closes with the PIN
     }
 
     /** The long-press menu on an app, and the tile it was opened from. */
@@ -275,7 +330,9 @@ public class HomeActivity extends Activity {
     @Override
     protected void onNewIntent(Intent i) {
         super.onNewIntent(i);
+        closeMenu();
         hideAllApps();
+        readExtras(i);
     }
 
     /**
@@ -338,17 +395,20 @@ public class HomeActivity extends Activity {
         row.removeAllViews();
         View toFocus = null;
         List<ApplicationInfo> installed = queryApps(true);
-        for (String pkg : favorites()) {
+        boolean kids = KidsMode.on(this);
+        for (String pkg : kids ? KidsMode.apps(this) : favorites()) {
             for (ApplicationInfo a : installed) {
                 if (!a.packageName.equals(pkg)) continue;
                 View tile = tile(pm, a);
-                // Long-press OK: restart the app, or take it off the row.
-                tile.setOnLongClickListener(v -> { appMenu(a, tile, this::loadApps); return true; });
+                // Long-press OK: restart the app, or take it off the row (not for kids).
+                if (!kids) tile.setOnLongClickListener(v -> { appMenu(a, tile, this::loadApps); return true; });
+                // Up from anywhere on the row reaches the corner buttons, however far away they are.
+                tile.setNextFocusUpId((kids ? lockBtn : appsBtn).getId());
                 row.addView(tile, rowParams());
                 if (toFocus == null || pkg.equals(keep)) toFocus = tile;
             }
         }
-        if (toFocus != null && allApps == null && !appsBtn.isFocused()) toFocus.requestFocus();
+        if (toFocus != null && allApps == null && timeUpLayer == null && !appsBtn.isFocused()) toFocus.requestFocus();
     }
 
     private LinearLayout.LayoutParams rowParams() {
@@ -361,7 +421,8 @@ public class HomeActivity extends Activity {
     private FrameLayout root;
     /** The full-screen layer (all apps or inputs) on top, and the button that opened it. */
     private View allApps, opener;
-    private View appsBtn, inputsBtn;
+    private View gearBtn, appsBtn, inputsBtn, kidsBtn, lockBtn;
+    private TextView kidsPill;
 
     /**
      * The TV's physical inputs (HDMI and the like, not the tuner), as tiles that switch to them.
@@ -462,6 +523,7 @@ public class HomeActivity extends Activity {
     /** Round icon button for the top corner. */
     private View roundButton(int kind, Runnable onClick) {
         ImageView b = new ImageView(this);
+        b.setId(View.generateViewId());   // so the row can point Up at it
         b.setImageDrawable(new Glyph(kind));
         b.setColorFilter(MUTED);
         b.setPadding(px(13), px(13), px(13), px(13));
@@ -478,7 +540,7 @@ public class HomeActivity extends Activity {
 
     /** Icons drawn to match each other: a gear, a 3x3 grid of rounded squares (all apps), or an input. */
     private static final class Glyph extends Drawable {
-        static final int GEAR = 0, APPS = 1, INPUT = 2;
+        static final int GEAR = 0, APPS = 1, INPUT = 2, KIDS = 3, LOCK = 4;
         private final int kind;
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -489,7 +551,28 @@ public class HomeActivity extends Activity {
             Rect b = getBounds();
             float s = Math.min(b.width(), b.height());
             float x0 = b.exactCenterX() - s / 2, y0 = b.exactCenterY() - s / 2;
-            if (kind == INPUT) {
+            if (kind == KIDS) {
+                // A smiling face.
+                float cx = x0 + s / 2, cy = y0 + s / 2;
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(s * 0.1f);
+                p.setStrokeCap(Paint.Cap.ROUND);
+                c.drawCircle(cx, cy, s * 0.42f, p);
+                c.drawArc(cx - s * 0.22f, cy - s * 0.12f, cx + s * 0.22f, cy + s * 0.24f, 20, 140, false, p);
+                p.setStyle(Paint.Style.FILL);
+                c.drawCircle(cx - s * 0.15f, cy - s * 0.1f, s * 0.065f, p);
+                c.drawCircle(cx + s * 0.15f, cy - s * 0.1f, s * 0.065f, p);
+            } else if (kind == LOCK) {
+                // A padlock.
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(s * 0.11f);
+                p.setStrokeCap(Paint.Cap.ROUND);
+                c.drawArc(x0 + s * 0.28f, y0 + s * 0.06f, x0 + s * 0.72f, y0 + s * 0.56f, 180, 180, false, p);
+                c.drawLine(x0 + s * 0.28f, y0 + s * 0.31f, x0 + s * 0.28f, y0 + s * 0.44f, p);
+                c.drawLine(x0 + s * 0.72f, y0 + s * 0.31f, x0 + s * 0.72f, y0 + s * 0.44f, p);
+                p.setStyle(Paint.Style.FILL);
+                c.drawRoundRect(x0 + s * 0.16f, y0 + s * 0.42f, x0 + s * 0.84f, y0 + s * 0.94f, s * 0.1f, s * 0.1f, p);
+            } else if (kind == INPUT) {
                 // A screen outline with an arrow coming in from the side.
                 p.setStyle(Paint.Style.STROKE);
                 p.setStrokeWidth(s * 0.11f);
@@ -596,6 +679,345 @@ public class HomeActivity extends Activity {
         if (opener != null) opener.requestFocus();
     }
 
+    // ---- Kids mode ----
+
+    /**
+     * Parent's setup: pick the allowed apps and the daily time, then turn kids mode on.
+     * The first time, it asks for a new PIN (twice) before turning on.
+     */
+    private void showKidsSetup() {
+        if (allApps != null) return;
+        PackageManager pm = getPackageManager();
+        FrameLayout layer = layer("وضع الأطفال",
+                "اختر التطبيقات المسموحة ووقت المشاهدة في اليوم، وبعدها شغّل الوضع. الخروج منه بالرقم السري بس.");
+        List<String> sel = new ArrayList<>(KidsMode.apps(this));
+
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setGravity(Gravity.CENTER_HORIZONTAL);
+        body.setClipChildren(false);
+        body.setClipToPadding(false);
+        body.setPadding(px(56), px(8), px(56), px(32));
+
+        body.addView(sectionLabel("التطبيقات المسموحة"));
+        android.widget.GridLayout grid = new android.widget.GridLayout(this);
+        grid.setColumnCount(5);
+        grid.setClipChildren(false);
+        View first = null;
+        for (ApplicationInfo a : queryApps(true)) {
+            // Not this app, Settings or the Play Store: those would get a child out of kids mode.
+            if (a.packageName.equals(getPackageName()) || HIDDEN.contains(a.packageName)) continue;
+            FrameLayout t = tile(pm, a);
+            TextView check = badge("✓");
+            check.setVisibility(sel.contains(a.packageName) ? View.VISIBLE : View.GONE);
+            t.addView(check, badgeParams());
+            t.setOnClickListener(v -> {
+                if (!sel.remove(a.packageName)) sel.add(a.packageName);
+                check.setVisibility(sel.contains(a.packageName) ? View.VISIBLE : View.GONE);
+            });
+            android.widget.GridLayout.LayoutParams lp = new android.widget.GridLayout.LayoutParams();
+            lp.width = px(148);
+            lp.height = px(83);
+            lp.setMargins(px(10), px(10), px(10), px(10));
+            grid.addView(t, lp);
+            if (first == null) first = t;
+        }
+        body.addView(grid);
+
+        body.addView(sectionLabel("وقت المشاهدة في اليوم"));
+        int[] mins = {30, 60, 120, 180, 0};
+        String[] names = {"٣٠ دقيقة", "ساعة", "ساعتين", "٣ ساعات", "بدون حد"};
+        int[] limit = {KidsMode.limit(this)};
+        LinearLayout chips = new LinearLayout(this);
+        chips.setClipChildren(false);
+        List<TextView> chipViews = new ArrayList<>();
+        for (int i = 0; i < mins.length; i++) {
+            int m = mins[i];
+            TextView c = pillButton(names[i]);
+            c.setTag(m);
+            c.setOnClickListener(v -> { limit[0] = m; for (TextView x : chipViews) paintChip(x, (int) x.getTag() == limit[0]); });
+            chipViews.add(c);
+            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(px(130), px(46));
+            cp.setMargins(px(8), 0, px(8), 0);
+            chips.addView(c, cp);
+        }
+        for (TextView x : chipViews) paintChip(x, (int) x.getTag() == limit[0]);
+        body.addView(chips);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setClipChildren(false);
+        actions.setPadding(0, px(26), 0, 0);
+        TextView start = pillButton("▶  تشغيل وضع الأطفال");
+        paintChip(start, true);
+        start.setOnFocusChangeListener((v, f) -> {
+            v.setBackground(f ? tileBg(true, 999) : round(GOLD, 999));
+            ((TextView) v).setTextColor(f ? GOLD : 0xFF1A1400);
+            v.animate().scaleX(f ? 1.06f : 1).scaleY(f ? 1.06f : 1).setDuration(120);
+        });
+        start.setOnClickListener(v -> {
+            if (sel.isEmpty()) { toast("اختر تطبيق واحد على الأقل"); return; }
+            KidsMode.setApps(this, sel);
+            KidsMode.setLimit(this, limit[0]);
+            if (KidsMode.pin(this) == null) newPin(this::turnKidsOn); else turnKidsOn();
+        });
+        actions.addView(start, new LinearLayout.LayoutParams(px(280), px(50)));
+        if (KidsMode.pin(this) != null) {
+            TextView change = pillButton("تغيير الرقم السري");
+            change.setOnClickListener(v -> askPin("تغيير الرقم السري", "أدخل الرقم السري الحالي", pin -> {
+                if (!pin.equals(KidsMode.pin(this))) return false;
+                newPin(() -> toast("تغيّر الرقم السري"));
+                return true;
+            }));
+            LinearLayout.LayoutParams chp = new LinearLayout.LayoutParams(px(220), px(50));
+            chp.setMarginStart(px(16));
+            actions.addView(change, chp);
+        }
+        body.addView(actions);
+
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.setClipChildren(false);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.addView(body);
+        FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(-1, -1);
+        sp.setMargins(0, px(100), 0, 0);
+        layer.addView(scroll, sp);
+        show(layer, kidsBtn, first != null ? first : start);
+    }
+
+    private void turnKidsOn() {
+        KidsMode.setOn(this, true);
+        hideAllApps();
+        applyMode();
+        loadApps();
+        toast("اشتغل وضع الأطفال 👶");
+    }
+
+    /** Asks for a new 4-digit PIN twice; runs {@code done} once both match. */
+    private void newPin(Runnable done) {
+        askPin("رقم سري جديد", "اختر ٤ أرقام تعرفها أنت بس، عشان تطفي وضع الأطفال", p1 -> {
+            askPin("تأكيد الرقم السري", "أدخل نفس الرقم مرة ثانية", p2 -> {
+                if (!p2.equals(p1)) { toast("الرقمين مختلفين، جرّب من جديد"); return true; }
+                KidsMode.setPin(this, p1);
+                done.run();
+                return true;
+            });
+            return true;
+        });
+    }
+
+    private interface PinListener {
+        /** @return false if the PIN is wrong (the prompt asks again). */
+        boolean onPin(String pin);
+    }
+
+    /**
+     * 4-digit PIN prompt for the remote: Up/Down change the digit, OK moves to the next one and
+     * confirms on the last; number keys work too.
+     */
+    private void askPin(String titleText, String hintText, PinListener l) {
+        closeMenu();
+        FrameLayout dim = trap();
+        dim.setBackgroundColor(0xD9000000);
+        LinearLayout card = card();
+        TextView title = text(22, GOLD, true);
+        title.setText(titleText);
+        TextView hint = text(16, MUTED, false);
+        hint.setText(hintText);
+        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(0, px(8), 0, 0);
+        card.addView(title);
+        card.addView(hint);
+
+        LinearLayout digits = new LinearLayout(this);
+        digits.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);   // digits read left to right
+        digits.setClipChildren(false);
+        digits.setClipToPadding(false);
+        digits.setPadding(0, px(20), 0, px(6));
+        int[] val = new int[4];
+        TextView[] boxes = new TextView[4];
+        for (int i = 0; i < 4; i++) {
+            int idx = i;
+            TextView d = text(32, INK, true);
+            d.setText("٠");
+            d.setGravity(Gravity.CENTER);
+            d.setFocusable(true);
+            d.setBackground(tileBg(false, px(12)));
+            d.setOnFocusChangeListener((v, f) -> {
+                v.setBackground(tileBg(f, px(12)));
+                v.animate().scaleX(f ? 1.12f : 1).scaleY(f ? 1.12f : 1).setDuration(100);
+            });
+            d.setOnKeyListener((v, code, e) -> {
+                int digit = code >= android.view.KeyEvent.KEYCODE_0 && code <= android.view.KeyEvent.KEYCODE_9
+                        ? code - android.view.KeyEvent.KEYCODE_0 : -1;
+                boolean ok = code == android.view.KeyEvent.KEYCODE_DPAD_CENTER || code == android.view.KeyEvent.KEYCODE_ENTER;
+                boolean up = code == android.view.KeyEvent.KEYCODE_DPAD_UP, down = code == android.view.KeyEvent.KEYCODE_DPAD_DOWN;
+                if (!(ok || up || down || digit >= 0)) return false;
+                if (e.getAction() != android.view.KeyEvent.ACTION_DOWN) return true;
+                if (up) val[idx] = (val[idx] + 1) % 10;
+                if (down) val[idx] = (val[idx] + 9) % 10;
+                if (digit >= 0) val[idx] = digit;
+                boxes[idx].setText(toAr(String.valueOf(val[idx])));
+                if (ok || digit >= 0) {
+                    if (idx < 3) { boxes[idx + 1].requestFocus(); return true; }
+                    String pin = "" + val[0] + val[1] + val[2] + val[3];
+                    closeMenu();
+                    if (!l.onPin(pin)) {
+                        toast("الرقم غلط");
+                        askPin(titleText, hintText, l);
+                    }
+                }
+                return true;
+            });
+            boxes[i] = d;
+            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(px(60), px(72));
+            bp.setMargins(px(8), 0, px(8), 0);
+            digits.addView(d, bp);
+        }
+        card.addView(digits);
+        TextView keys = text(14, MUTED, false);
+        keys.setText("↑ ↓ لتغيير الرقم  ·  زر الوسط للتالي");
+        keys.setPadding(0, px(10), 0, 0);
+        card.addView(keys);
+
+        dim.addView(card, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        root.addView(dim, new FrameLayout.LayoutParams(-1, -1));
+        menu = dim;
+        menuFrom = getCurrentFocus();
+        boxes[0].requestFocus();
+    }
+
+    private View timeUpLayer;
+
+    /** Over everything once the day's time is used up; only the parent's PIN gets past it. */
+    private void showTimeUp() {
+        if (timeUpLayer != null) return;
+        hideAllApps();
+        FrameLayout layer = trap();
+        layer.setBackground(new NightSky());
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER_HORIZONTAL);
+        col.setClipChildren(false);
+        TextView moon = text(64, GOLD, false);
+        moon.setTypeface(Typeface.DEFAULT);
+        moon.setText("🌙");
+        TextView title = text(34, INK, true);
+        title.setText("خلص وقت المشاهدة لليوم");
+        title.setPadding(0, px(14), 0, 0);
+        TextView sub = text(19, MUTED, false);
+        sub.setText("نكمل بكرة إن شاء الله 🌟");
+        sub.setPadding(0, px(10), 0, px(30));
+        TextView parent = pillButton("للوالدين: الرقم السري");
+        parent.setOnClickListener(v -> askPin("للوالدين", "أدخل الرقم السري", pin -> {
+            if (!pin.equals(KidsMode.pin(this))) return false;
+            choices("وش تبي تسوي؟", new String[]{"＋  ٣٠ دقيقة زيادة", "إيقاف وضع الأطفال"}, new Runnable[]{
+                    () -> { KidsMode.addMinutes(this, 30); closeTimeUp(); updateTop(); toast("انضافت ٣٠ دقيقة"); },
+                    () -> { KidsMode.setOn(this, false); applyMode(); loadApps(); updateTop(); toast("انطفى وضع الأطفال"); }});
+            return true;
+        }));
+        for (TextView t : new TextView[]{moon, title, sub}) {
+            t.setGravity(Gravity.CENTER);
+            col.addView(t, new LinearLayout.LayoutParams(-1, -2));
+        }
+        col.addView(parent, new LinearLayout.LayoutParams(px(280), px(50)));
+        layer.addView(col, new FrameLayout.LayoutParams(-1, -2, Gravity.CENTER));
+        root.addView(layer, new FrameLayout.LayoutParams(-1, -1));
+        timeUpLayer = layer;
+        parent.requestFocus();
+    }
+
+    private void closeTimeUp() {
+        if (timeUpLayer == null) return;
+        root.removeView(timeUpLayer);
+        timeUpLayer = null;
+        if (row.getChildCount() > 0) row.getChildAt(0).requestFocus();
+    }
+
+    /** A small card of choices over the screen; Back closes it. */
+    private void choices(String titleText, String[] labels, Runnable[] actions) {
+        closeMenu();
+        FrameLayout dim = trap();
+        dim.setBackgroundColor(0xB3000000);
+        LinearLayout card = card();
+        TextView title = text(20, GOLD, true);
+        title.setText(titleText);
+        card.addView(title);
+        View firstBtn = null;
+        for (int i = 0; i < labels.length; i++) {
+            Runnable r = actions[i];
+            View b = menuButton(labels[i], () -> { closeMenu(); r.run(); });
+            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(px(300), px(46));
+            bp.topMargin = px(i == 0 ? 16 : 10);
+            card.addView(b, bp);
+            if (firstBtn == null) firstBtn = b;
+        }
+        dim.addView(card, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        root.addView(dim, new FrameLayout.LayoutParams(-1, -1));
+        menu = dim;
+        menuFrom = getCurrentFocus();
+        if (firstBtn != null) firstBtn.requestFocus();
+    }
+
+    /** The dark, gold-edged card used by the small menus. */
+    private LinearLayout card() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER_HORIZONTAL);
+        card.setClipChildren(false);
+        card.setClipToPadding(false);
+        card.setPadding(px(30), px(24), px(30), px(24));
+        GradientDrawable bg = round(0xF0101828, px(18));
+        bg.setStroke(px(1.5f), GOLD);
+        card.setBackground(bg);
+        return card;
+    }
+
+    private TextView sectionLabel(String s) {
+        TextView t = text(18, GOLD, true);
+        t.setText(s);
+        t.setPadding(0, px(18), 0, px(6));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        t.setLayoutParams(lp);
+        return t;
+    }
+
+    private TextView pillButton(String label) {
+        TextView b = (TextView) menuButton(label, () -> {});
+        b.setOnClickListener(null);
+        return b;
+    }
+
+    /** Selected chips are filled gold; others outlined (focus still shows the gold ring). */
+    private void paintChip(TextView c, boolean selected) {
+        c.setTag(R_SELECTED, selected);
+        c.setBackground(selected ? round(GOLD, 999) : tileBg(c.isFocused(), 999));
+        c.setTextColor(selected ? 0xFF1A1400 : (c.isFocused() ? GOLD : INK));
+        c.setOnFocusChangeListener((v, f) -> {
+            boolean s = Boolean.TRUE.equals(v.getTag(R_SELECTED));
+            v.setBackground(s && !f ? round(GOLD, 999) : tileBg(f, 999));
+            ((TextView) v).setTextColor(s && !f ? 0xFF1A1400 : (f ? GOLD : INK));
+            v.animate().scaleX(f ? 1.06f : 1).scaleY(f ? 1.06f : 1).setDuration(120);
+        });
+    }
+
+    /** View tag key for a chip's selected state (any id unique within this app works). */
+    private static final int R_SELECTED = 0x7f0f0001;
+
+    private TextView badge(String s) {
+        TextView b = text(13, 0xFF1A1400, true);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setText(s);
+        b.setGravity(Gravity.CENTER);
+        b.setBackground(round(GOLD, 999));
+        return b;
+    }
+
+    private FrameLayout.LayoutParams badgeParams() {
+        FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(px(22), px(22), Gravity.TOP | Gravity.END);
+        sl.setMargins(px(5), px(5), px(5), px(5));
+        return sl;
+    }
+
     /** Focusable rounded frame that grows and turns gold when focused. */
     private FrameLayout frame(Object tag, int r) {
         FrameLayout box = new FrameLayout(this);
@@ -634,16 +1056,28 @@ public class HomeActivity extends Activity {
             col.addView(icon, new LinearLayout.LayoutParams(px(44), px(44)));
             TextView name = text(15, INK, true);
             name.setText(pm.getApplicationLabel(a));
-            col.addView(name);
+            name.setGravity(Gravity.CENTER);
+            name.setSingleLine(true);
+            name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            name.setPadding(px(8), px(4), px(8), 0);
+            col.addView(name, new LinearLayout.LayoutParams(-1, -2));
             box.addView(col, new FrameLayout.LayoutParams(-1, -1));
         }
 
-        box.setOnClickListener(v -> {
-            Intent i = pm.getLeanbackLaunchIntentForPackage(a.packageName);
-            if (i == null) i = pm.getLaunchIntentForPackage(a.packageName);
-            launch(i);
-        });
+        box.setOnClickListener(v -> openApp(a.packageName));
         return box;
+    }
+
+    /** Opens an app from a tile; in kids mode, starts counting its time (or shows time's up). */
+    private void openApp(String pkg) {
+        if (KidsMode.on(this)) {
+            if (KidsMode.timeUp(this)) { showTimeUp(); return; }
+            KidsMode.startSession(this);
+        }
+        PackageManager pm = getPackageManager();
+        Intent i = pm.getLeanbackLaunchIntentForPackage(pkg);
+        if (i == null) i = pm.getLaunchIntentForPackage(pkg);
+        launch(i);
     }
 
     private void launch(Intent i) {
@@ -658,24 +1092,62 @@ public class HomeActivity extends Activity {
         hijri.setText(new SimpleDateFormat("EEEE، d MMMM y", HIJRI).format(now) + " هـ");
         greg.setText(new SimpleDateFormat("d MMMM y", AR).format(now) + " م");
 
+        // Kids mode: time left today.
+        if (KidsMode.on(this)) {
+            long left = KidsMode.remaining(this);
+            kidsPill.setText(left == Long.MAX_VALUE ? "👶  وضع الأطفال"
+                    : left <= 0 ? "👶  انتهى وقت المشاهدة لليوم"
+                    : "👶  باقي على وقت المشاهدة " + toAr(duration(left)));
+            kidsPill.setVisibility(View.VISIBLE);
+        } else {
+            kidsPill.setVisibility(View.GONE);
+        }
+
         long[] at = new long[1];
-        String key = nextPrayer(at);
+        if (isRamadan()) {
+            // Between Fajr and Maghrib: count down to iftar; otherwise to the end of suhoor (Fajr).
+            long[] maghrib = new long[1], fajr = new long[1];
+            if (nextPrayer(maghrib, "maghrib") != null && nextPrayer(fajr, "fajr") != null) {
+                next.setText(maghrib[0] < fajr[0]
+                        ? "🌙  الإفطار بعد " + toAr(duration(maghrib[0] - now.getTime()))
+                        : "🌙  الإمساك بعد " + toAr(duration(fajr[0] - now.getTime())));
+                next.setVisibility(View.VISIBLE);
+                return;
+            }
+        }
+        String key = nextPrayer(at, null);
         if (key == null) { next.setVisibility(View.GONE); return; }
-        long mins = Math.max(0, (at[0] - now.getTime() + 59_999) / 60_000);
-        String left = mins >= 60 ? (mins / 60) + " س " + (mins % 60) + " د" : mins + " د";
-        next.setText(AdhanService.nameOf(key) + "  ·  بعد " + toAr(left));
+        next.setText(AdhanService.nameOf(key) + "  ·  بعد " + toAr(duration(at[0] - now.getTime())));
         next.setVisibility(View.VISIBLE);
     }
 
-    /** Next prayer from the times the page synced, or computed here as a fallback. */
-    private String nextPrayer(long[] at) {
+    /** "٢ س ١٥ د" style, rounded up to the minute. */
+    private static String duration(long ms) {
+        long mins = Math.max(0, (ms + 59_999) / 60_000);
+        return mins >= 60 ? (mins / 60) + " س " + (mins % 60) + " د" : mins + " د";
+    }
+
+    /** Ramadan by the Umm al-Qura calendar (or the preview flag). */
+    private static boolean isRamadan() {
+        if (ramadanTest) return true;
+        android.icu.util.Calendar h = android.icu.util.Calendar.getInstance(HIJRI);
+        return h.get(android.icu.util.Calendar.MONTH) == 8;   // 0-based: Muharram = 0, Ramadan = 8
+    }
+
+    /**
+     * Next prayer (or the next one named {@code only}) from the times the page synced, or computed
+     * here as a fallback. Returns its key and puts its time in {@code at[0]}.
+     */
+    private String nextPrayer(long[] at, String only) {
         long now = System.currentTimeMillis();
         String key = null;
         for (String item : AdhanScheduler.prefs(this).getString("times", "").split(",")) {
             int i = item.indexOf(':');
             if (i < 0) continue;
+            String k = item.substring(0, i);
+            if (only != null && !only.equals(k)) continue;
             long t = Long.parseLong(item.substring(i + 1));
-            if (t > now && (key == null || t < at[0])) { at[0] = t; key = item.substring(0, i); }
+            if (t > now && (key == null || t < at[0])) { at[0] = t; key = k; }
         }
         if (key != null) return key;
         float lat = AdhanScheduler.prefs(this).getFloat("lat", 24.7136f);
@@ -684,7 +1156,9 @@ public class HomeActivity extends Activity {
         for (int d = 0; d < 2; d++) {
             long[] t = PrayerTimes.forDay(lat, lng,
                     day.get(Calendar.YEAR), day.get(Calendar.MONTH) + 1, day.get(Calendar.DAY_OF_MONTH));
-            for (int i = 0; i < t.length; i++) if (t[i] > now) { at[0] = t[i]; return PrayerTimes.KEYS[i]; }
+            for (int i = 0; i < t.length; i++) {
+                if (t[i] > now && (only == null || only.equals(PrayerTimes.KEYS[i]))) { at[0] = t[i]; return PrayerTimes.KEYS[i]; }
+            }
             day.add(Calendar.DAY_OF_MONTH, 1);
         }
         return null;

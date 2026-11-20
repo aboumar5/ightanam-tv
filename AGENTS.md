@@ -107,6 +107,8 @@ adb shell pm enable com.google.android.tungsten.setupwraith
 
 Tell the person: the input button (screen with an arrow) switches HDMI inputs; the grid button (next to the gear) lists all apps; long-press OK on any app (there or on the bottom row) opens a menu to reopen it fresh,
 force-stop it (via its App info page) when it hangs, or add it to / remove it from the row.
+The smiling-face button sets up kids mode (allowed apps, daily time, a 4-digit PIN the parent
+chooses; never pick or ask for the PIN yourself). Ramadan mode turns on by itself in Ramadan.
 
 ## 7. Speed tweaks (optional, ask first)
 
