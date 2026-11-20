@@ -105,7 +105,8 @@ adb shell pm enable com.google.android.apps.tv.launcherx
 adb shell pm enable com.google.android.tungsten.setupwraith
 ```
 
-Tell the person: the input button (screen with an arrow) switches HDMI inputs; the grid button (next to the gear) lists all apps; long-press OK on an app there adds it to or removes it from the bottom row.
+Tell the person: the input button (screen with an arrow) switches HDMI inputs; the grid button (next to the gear) lists all apps; long-press OK on any app (there or on the bottom row) opens a menu to reopen it fresh,
+force-stop it (via its App info page) when it hangs, or add it to / remove it from the row.
 
 ## 7. Speed tweaks (optional, ask first)
 

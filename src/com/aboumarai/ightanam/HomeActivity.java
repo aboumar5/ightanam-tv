@@ -84,8 +84,8 @@ public class HomeActivity extends Activity {
         clock.setTypeface(font("black", true));
         clock.setLetterSpacing(0.02f);
         hijri = text(24, GOLD, true);
-        greg = text(16, MUTED, false);
-        next = text(17, GOLD, true);
+        greg = text(18, MUTED, false);
+        next = text(19, GOLD, true);
         GradientDrawable pill = new GradientDrawable();
         pill.setColor(0x29E9C069);
         pill.setCornerRadius(999);
@@ -148,9 +148,128 @@ public class HomeActivity extends Activity {
         super.onPause();
     }
 
-    /** Home stays home: Back only closes the all-apps grid. */
+    /** Home stays home: Back only closes the app menu or the full-screen layer. */
     @Override
-    public void onBackPressed() { hideAllApps(); }
+    public void onBackPressed() {
+        if (menu != null) closeMenu(); else hideAllApps();
+    }
+
+    /** The long-press menu on an app, and the tile it was opened from. */
+    private View menu, menuFrom;
+
+    /**
+     * Small card over the screen for one app: reopen it fresh, force-stop it (for one that hangs),
+     * or add it to / take it off the home row. {@code onToggle} runs after the row changes.
+     */
+    private void appMenu(ApplicationInfo a, View from, Runnable onToggle) {
+        if (menu != null) return;
+        PackageManager pm = getPackageManager();
+        String label = String.valueOf(pm.getApplicationLabel(a));
+        boolean onRow = favorites().contains(a.packageName);
+
+        FrameLayout dim = trap();
+        dim.setBackgroundColor(0xB3000000);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER_HORIZONTAL);
+        card.setClipChildren(false);
+        card.setClipToPadding(false);
+        card.setPadding(px(28), px(22), px(28), px(22));
+        GradientDrawable bg = round(0xF0101828, px(18));
+        bg.setStroke(px(1.5f), GOLD);
+        card.setBackground(bg);
+
+        TextView title = text(20, GOLD, true);
+        title.setText(label);
+        title.setGravity(Gravity.CENTER);
+        card.addView(title);
+        View restart = menuButton("↻  فتح التطبيق من جديد", () -> { closeMenu(); restartApp(a.packageName, label); });
+        // Only the system can fully end another app's process: open its App info page,
+        // where "Force stop" is one press away.
+        View stop = menuButton("■  إيقاف إجباري (من الإعدادات)", () -> {
+            closeMenu();
+            // A fresh Settings task, or an already-open Settings screen comes back instead.
+            try {
+                startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        android.net.Uri.fromParts("package", a.packageName, null))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
+            } catch (Exception ignored) {}
+            android.widget.Toast.makeText(this, "اضغط Force stop (إيقاف إجباري) ثم OK، وبعدها افتح التطبيق", android.widget.Toast.LENGTH_LONG).show();
+        });
+        View toggle = menuButton(onRow ? "✕  إزالة من الشريط" : "★  إضافة للشريط", () -> {
+            closeMenu();
+            toggleFavorite(a.packageName);
+            onToggle.run();
+        });
+        boolean firstButton = true;
+        for (View b : new View[]{restart, stop, toggle}) {
+            LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(px(300), px(46));
+            bp.topMargin = px(firstButton ? 16 : 10);
+            card.addView(b, bp);
+            firstButton = false;
+        }
+
+        dim.addView(card, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        root.addView(dim, new FrameLayout.LayoutParams(-1, -1));
+        menu = dim;
+        menuFrom = from;
+        restart.requestFocus();
+    }
+
+    /** A full-screen layer the arrow keys can't leave, so focus never lands on what's underneath. */
+    private FrameLayout trap() {
+        FrameLayout f = new FrameLayout(this) {
+            @Override
+            public View focusSearch(View focused, int direction) {
+                View next = android.view.FocusFinder.getInstance().findNextFocus(this, focused, direction);
+                return next != null ? next : focused;
+            }
+        };
+        f.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        f.setClipChildren(false);
+        return f;
+    }
+
+    private View menuButton(String label, Runnable onClick) {
+        TextView b = text(17, INK, true);
+        b.setText(label);
+        b.setGravity(Gravity.CENTER);
+        b.setFocusable(true);
+        b.setBackground(tileBg(false, 999));
+        b.setOnFocusChangeListener((v, f) -> {
+            v.setBackground(tileBg(f, 999));
+            ((TextView) v).setTextColor(f ? GOLD : INK);
+            v.animate().scaleX(f ? 1.05f : 1).scaleY(f ? 1.05f : 1).setDuration(120);
+        });
+        b.setOnClickListener(v -> onClick.run());
+        return b;
+    }
+
+    private void closeMenu() {
+        if (menu == null) return;
+        root.removeView(menu);
+        menu = null;
+        if (menuFrom != null && menuFrom.isAttachedToWindow()) menuFrom.requestFocus();
+    }
+
+    /**
+     * Opens the app fresh: its old screens are cleared (dropping a stuck one), and its process is
+     * ended too when the system allows it (only for apps not running a service).
+     */
+    private void restartApp(String pkg, String label) {
+        android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+        am.killBackgroundProcesses(pkg);
+        android.widget.Toast.makeText(this, "يُعاد تشغيل " + label + "…", android.widget.Toast.LENGTH_SHORT).show();
+        PackageManager pm = getPackageManager();
+        Intent i = pm.getLeanbackLaunchIntentForPackage(pkg);
+        if (i == null) i = pm.getLaunchIntentForPackage(pkg);
+        if (i == null) return;
+        Intent start = i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        // A moment for the old process to go before the new one starts.
+        handler.postDelayed(() -> {
+            try { startActivity(start); } catch (Exception ignored) {}
+        }, 700);
+    }
 
     /** Home pressed while already home: back to the main view. */
     @Override
@@ -223,8 +342,8 @@ public class HomeActivity extends Activity {
             for (ApplicationInfo a : installed) {
                 if (!a.packageName.equals(pkg)) continue;
                 View tile = tile(pm, a);
-                // Long-press OK on a row tile takes it off the row.
-                tile.setOnLongClickListener(v -> { toggleFavorite(pkg); loadApps(); return true; });
+                // Long-press OK: restart the app, or take it off the row.
+                tile.setOnLongClickListener(v -> { appMenu(a, tile, this::loadApps); return true; });
                 row.addView(tile, rowParams());
                 if (toFocus == null || pkg.equals(keep)) toFocus = tile;
             }
@@ -300,7 +419,7 @@ public class HomeActivity extends Activity {
         TextView n = text(20, connected ? GOLD : MUTED, true);
         n.setText(name);
         n.setGravity(Gravity.CENTER);
-        TextView s = text(13, connected ? INK : MUTED, false);
+        TextView s = text(15, connected ? INK : MUTED, false);
         s.setText(sub);
         s.setGravity(Gravity.CENTER);
         s.setPadding(0, px(6), 0, 0);
@@ -316,14 +435,13 @@ public class HomeActivity extends Activity {
 
     /** Full-screen layer with a title and a hint line. */
     private FrameLayout layer(String titleText, String hintText) {
-        FrameLayout layer = new FrameLayout(this);
+        FrameLayout layer = trap();
         layer.setBackground(new NightSky());
-        layer.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.VERTICAL);
         TextView title = text(26, INK, true);
         title.setText(titleText);
-        TextView hint = text(13, MUTED, false);
+        TextView hint = text(16, MUTED, false);
         hint.setText(hintText);
         hint.setPadding(0, px(8), 0, 0);
         head.addView(title);
@@ -428,7 +546,7 @@ public class HomeActivity extends Activity {
         if (allApps != null) return;
         PackageManager pm = getPackageManager();
         FrameLayout layer = layer("كل التطبيقات",
-                "ضغطة مطوّلة على زر الوسط: إضافة التطبيق للشريط تحت أو إزالته  ·  ★ = في الشريط");
+                "ضغطة مطوّلة على زر الوسط: خيارات التطبيق (فتحه من جديد، إيقافه، الشريط)  ·  ★ = في الشريط");
 
         android.widget.GridLayout grid = new android.widget.GridLayout(this);
         grid.setColumnCount(5);
@@ -450,7 +568,7 @@ public class HomeActivity extends Activity {
             sl.setMargins(px(5), px(5), px(5), px(5));
             t.addView(star, sl);
             t.setOnLongClickListener(v -> {
-                star.setVisibility(toggleFavorite(a.packageName) ? View.VISIBLE : View.GONE);
+                appMenu(a, t, () -> star.setVisibility(favorites().contains(a.packageName) ? View.VISIBLE : View.GONE));
                 return true;
             });
             android.widget.GridLayout.LayoutParams lp = new android.widget.GridLayout.LayoutParams();
@@ -514,7 +632,7 @@ public class HomeActivity extends Activity {
             ImageView icon = new ImageView(this);
             icon.setImageDrawable(pm.getApplicationIcon(a));
             col.addView(icon, new LinearLayout.LayoutParams(px(44), px(44)));
-            TextView name = text(13, INK, true);
+            TextView name = text(15, INK, true);
             name.setText(pm.getApplicationLabel(a));
             col.addView(name);
             box.addView(col, new FrameLayout.LayoutParams(-1, -1));
